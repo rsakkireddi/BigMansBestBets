@@ -1,0 +1,599 @@
+---
+title: "Analysing NBA Player Injuries"
+author: "Raja Akkireddi"
+date: "`r Sys.Date()`"
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  html_document:
+    code_folding: hide
+    df_print: paged
+    highlight: pygments
+    number_sections: yes
+    theme: spacelab
+    toc: yes
+---
+
+# Versions
+
+**Part 1 (2018-07-10):**
+Part one contained a basic EDA of the main variables and analysed how many injuries were occurring, how were they changing over time, and which teams and players were most affected. Additionally, the phenomena of teams resting players was also analysed.
+
+**Part 2 (Current):**
+Part two includes an in depth breakdown of two of the main injury types - *hamstring* and *knee* injuries.
+
+# Introduction
+
+The purpose of this analysis is to conduct a thorough analysis of NBA injuries and to understand whetehre there is a pattern in injuries. Some of the questions I wish to answer is:
+
+* Who do injuries happen to?
+* Have certain teams had more or less luck?
+* Is there a particular time of year or day where injuries occur more frequently?
+
+
+# Load Data and Libraries
+
+```{r, message=FALSE, warning=FALSE}
+# Load Libraries
+library(tidyverse)
+library(stringr)
+library(tidytext)
+library(lubridate)
+
+# Read in Data
+library(readr)
+injuries <- read_csv("~/NBA_Injuries/injuries.csv")
+View(injuries)
+```
+
+
+# Inspecting the Data
+
+```{r, message=FALSE, warning=FALSE}
+glimpse(injuries)
+
+```
+
+The dataset analysed contains `r nrow(injuries)` observations and `r ncol(injuries)` variables in the raw dataset. Additionally, the dataset contains all 30 teams currently in the NBA and there are `r length(unique(injuries$Relinquised))` unique players in the data.
+
+```{r, message=FALSE, warning=FALSE}
+print(colSums(is.na(injuries)))
+```
+
+## NAs in `Team`
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>% filter(is.na(Team))
+```
+
+There are some NAs - strangely there are three NAs in `Team`.
+
+## What is the "`Acquired`" variable
+
+```{r, message=FALSE, warning=FALSE, fig.width = 8}
+injuries %>% filter(!is.na(Acquired)) %>% count(Notes) %>% arrange(desc(n))
+```
+
+I will remove these records from the rest of the analysis as I am interested in analysing the injuries sustained, not which injuries players are returning from.
+
+```{r, message=FALSE, warning=FALSE}
+injuries <- injuries %>% filter(is.na(Acquired)) %>% select(-Acquired)
+
+print(colSums(is.na(injuries)))
+```
+
+Removing the NAs in `Acquired` has also removed the NAs from `Relinquised`.
+
+
+### Feature Engineering: `Date` 
+
+I will create a few new variables to make analysing the data over time a bit richer.
+
+```{r, message=FALSE, warning=FALSE}
+injuries$year <- year(injuries$Date)
+injuries$yr_mo <- format(injuries$Date, "%Y-%m")
+injuries$month <- month(injuries$Date, label = TRUE)
+injuries$day <- weekdays(injuries$Date)
+```
+
+# Exploratory Data Analysis (EDA)
+
+Now let's get in to visualising the data and starting to tell stories with what has been happening with injuries in the NBA.
+
+
+## Which teams are impacted
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  filter(!is.na(Team)) %>%
+  count(Team) %>%
+  ggplot(aes(x=reorder(Team,n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "Team", y = "Number of events", title = "Which team has the most events") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+```
+
+The Bucks, T-Wolves and Lakers have had the most injury events, while the Thunder, Blazers and Pacers the lowest number.
+
+I will try to unpack the injury types later in this analysis to see if certain teams suffer from different types of injuries.
+
+## Which players are the most injured
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  filter(!is.na(Team)) %>%
+  count(Relinquised) %>%
+  arrange(desc(n)) %>%
+  top_n(n=20) %>%
+  ggplot(aes(x=reorder(Relinquised,n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  coord_flip() +
+  theme_bw() +
+  labs(x = "Player", y = "Number of events", title = "Player with the most events", subtitle = "Limited to top 20 'injured' players") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+```
+
+K-Love, Jason Smith and Eric Gordon are the three players that appear on our list most frequently. The distribution of the number of times each player appears on our list is shown below.
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  filter(!is.na(Team)) %>%
+  count(year, Relinquised) %>%
+  ggplot(aes(x = n)) +
+  geom_density(color = "midnightblue", fill = "white") +
+  facet_wrap(~ year, scales = "free_y") +
+  theme_bw() +
+  labs(y = "", x = "Number of events", title = "Number of events per player", subtitle = "Note: 2010 & 2018 not a full year") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+```
+
+The distributions have remained fairly similar over the years, however the period between 2012-2014 saw players who were injured appear on our list more frequently. 
+
+## Injuries over time
+
+```{r, message=FALSE, warning=FALSE}
+it1 <- injuries %>%
+  count(year) %>%
+  ggplot(aes(x=year, y=n, group = 1)) +
+  geom_line() +
+  ylim(0,1800) +
+  geom_line(size = 1, color = "darkred") +
+  geom_point(size = 2, color = "midnightblue") +
+  geom_text(color = "midnightblue", aes(label = n, y=n+100)) +
+  theme_classic() +
+  labs(title = "Tracking injury events over time", subtitle = "Note: 2010 & 2018 not a full year", x = "Calendar Year", y = "Number events") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+
+it2 <- injuries %>%
+  count(month) %>%
+  ggplot(aes(x=month, y=n, group = 1)) +
+  geom_line() +
+  ylim(0,2000) +
+  geom_line(size = 1, color = "darkred") +
+  geom_point(size = 2, color = "midnightblue") +
+  geom_text(color = "midnightblue", aes(label = n, y=n+200)) +
+  theme_classic() +
+  labs(title = "Highest Injury Month", subtitle = "Note: All-Star Game occurs in February", x = "Month", y = "Number events") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+gridExtra::grid.arrange(it1, it2, ncol = 1)
+```
+
+**Yearly:**
+The number of injury events increase for the first couple of years, rising to a peak of 1,664 in 2012. Since then, then number has been trending downwards.
+
+**Monthly**
+From the beginning of the season in October, injury events trend upwards as the season progresses, rising to a peak in March. The notable exception though is the dip seen in February. Given the season takes pause for the All-Star weekend, games aren't played the most month with the break spanning a week or so.
+
+# Injury types
+
+## What injuries are occurring
+
+First I want to explore what the injury events are related to.
+
+```{r, message=FALSE, warning=FALSE, fig.width = 8}
+injuries %>%
+  count(Notes) %>%
+  arrange(desc(n))
+```
+
+There are some interesting observations from the table above:
+
+* Firstly, `rest (DNP)` and `rest (DTD)` appear quite frequently. I will separate these out shortly.
+* DNP (*did not play*) and DTD (*day-to-day*) are both captured. I will create a feature to represent this.
+* Each body part can either be sprained, sore, strained, broken etc. I will further code these injury types
+
+
+### Feature Engineering: `Notes`
+
+I want to create some new variables to further explore the notes available, namely, I want to know how many players were being rested, and whether there was a pattern of players resting over the time period analysed.
+
+Additionally, I will split the `Notes` feature out into two variables - one for the cause `cause`, the other for the outcome - `status` (inside the parentheses) 
+
+```{r, message=FALSE, warning=FALSE}
+# injuries$status <- sub("\\).*", "", sub(".*\\(", "", injuries$Notes))
+
+# create a feature for whether the cause was rest
+injuries$rest <- str_detect(injuries$Notes, "rest")
+
+# split out `Notes` to two new variables
+inj_event <- str_split(injuries$Notes, pattern = fixed(" ("), n=2, simplify = TRUE)
+injuries$cause <- inj_event[,1]
+injuries$status <- inj_event[,2] %>% str_replace(pattern = "\\)", replacement = "")
+
+```
+
+## Resting Players
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  count(rest) %>%
+  arrange(desc(n)) %>%
+  head(30) %>%
+  ggplot(aes(x= reorder(rest,n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  geom_text(size = 4, fontface = "bold",  aes(label = n, y= n+500)) +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "How many players were out because of rest?", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+```
+
+Only 470 events were coded as `rest`. That's only `r paste0(round(mean(injuries$rest == TRUE)*100,2),"%")`.  Teams were resting players and it was said to be bad for business. Additionally, teams may also rest players to increase their chances of finishing lower and having more balls in the lottery.
+
+
+```{r, message=FALSE, warning=FALSE}
+rest1 <- injuries %>%
+  filter(rest == TRUE) %>%
+  count(year) %>%
+  ggplot(aes(x=year, y=n, group = 1)) +
+  geom_line(size = 1, color = "darkred") +
+  geom_point(size = 2, color = "midnightblue") +
+  geom_text(color = "midnightblue", aes(label = n, y=n+7)) +
+  theme_classic() +
+  labs(title = "Tracking rest over time", subtitle = "Note: 2010 & 2018 not a full year", x = "Calendar Year", y = "Number rest events") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+
+rest2 <- injuries %>%
+  filter(rest == TRUE) %>%
+  count(month) %>%
+  ggplot(aes(x=month, y=n, group = 1)) +
+  geom_line(size = 1, color = "darkred") +
+  geom_point(size = 2, color = "midnightblue") +
+  geom_text(color = "midnightblue", aes(label = n, y=n+15)) +
+  theme_classic() +
+  labs(title = "When is rest needed?", subtitle = "Note: Playoffs generally begin mid-April", x = "Calendar Year", y = "Number rest events") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+gridExtra::grid.arrange(rest1, rest2, ncol = 1)
+```
+
+Overall, there is an upward trend in players being held out because of rest, with a very big spike in 2016, with 129 resting events, while 2013 was at the other end of the spectrum with only 13. Rest events peak in April - largely explained by teams heading in to playoffs - which start in mid-April - looking to rest players before they start.
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  filter(rest == TRUE) %>%
+  count(Team) %>%
+  arrange(desc(n)) %>%
+  ggplot(aes(x= reorder(Team,n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  theme_bw() +
+  coord_flip() +
+  labs(x= "Team", y= "Number Rested", title = "Which teams are the biggest culprits?") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+```
+
+
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  filter(rest == TRUE) %>%
+  group_by(year, Team) %>%
+  summarise(n = n()) %>%
+  arrange(desc(n)) %>%
+  top_n(n=5) %>%
+  ggplot(aes(x= reorder(Team,n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  theme_bw() +
+  coord_flip() +
+  labs(x= "Team", y= "Number Rested", title = "Which teams are the biggest culprits?") +
+  facet_wrap(~year, scales = "free_y", drop = TRUE, ncol = 2) +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+```
+
+The Spurs also were frequently the top 5 in each of the years analysed. At the other end of the success spectrum, the lowly Sacramento Kings were second to the Spurs in resting players in consecutive years (2016 & 2017).
+
+```{r, message=FALSE, warning=FALSE}
+a <- injuries %>%
+  filter(rest == TRUE) %>%
+  group_by(year, Relinquised) %>%
+  summarise(num_rested = n()) %>% ungroup()
+
+b <- injuries %>%
+  group_by(year, Relinquised) %>%
+  summarise(num_injuries = n()) %>% ungroup()
+
+rest_inj <- a %>%
+  left_join(b, by = c("year", "Relinquised")) %>%
+  filter(year > 2010, year < 2018) 
+
+rest_inj%>%
+  ggplot(aes(y = num_rested, x = num_injuries)) +
+  geom_point(color = "midnightblue") +
+  geom_smooth(method = "lm", se = FALSE, colour = "darkred", linetype = 2) +
+  theme_minimal() +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke")) +
+  labs(title = "Relationship between players resting and injured", y = "Number time rested (player)", x = "Number injuries (player)")
+
+```
+
+There appears to be a weak-moderate positive correlation (`r cor(rest_inj$num_injuries,rest_inj$num_rested)`) between the number of times a player is injured and how much rest he is given.
+
+## DNP or DTD
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  count(status) %>%
+  arrange(desc(n)) %>%
+  head(5) %>%
+  ggplot(aes(x= reorder(status,n), y=n)) +
+  geom_text(size = 3, fontface = "bold",  aes(label = n, y= n+150)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  coord_flip()+
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  theme(panel.background = element_rect(fill = "whitesmoke"))
+```
+
+The severity of the injury event can be further analysed based on the exected return timetable. 'Did Not Plays' (`DNPs`) occurred the most frequently, while 'Day-to-Day' (`DTD`) next. The more severe injuries (`out indefinitely` and `out for season`) occurred `r paste(round(mean(injuries$status == "out indefinitely") + mean(injuries$status == "out for season"),2),"%",sep = "")`.
+
+# Injury Analysis
+
+Using the `Tidytext` package and the `wordcloud` plotting function from the `wordcloud` package, I want to conduct text analysis to visualise the main injuries sustained.
+
+```{r, message=FALSE, warning=FALSE}
+unnest_injuries <- injuries %>%
+  select(year, cause) %>%
+  unnest_tokens(word, cause, token = "ngrams", n = 1) %>%
+  count(word) 
+
+unnest_injuries%>%
+  with(wordcloud::wordcloud(words = word, freq = n, max.words = 100))
+```
+
+
+## Hamstring Injuries
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, fig.height=6}
+injuries <- injuries %>%
+  mutate(hamstring_inj = str_detect(Notes, "hamstring"))
+
+ham1 <- injuries %>%
+  count(hamstring_inj) %>%
+  ggplot(aes(x= hamstring_inj, y=n, fill = hamstring_inj)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  geom_text(size = 4, fontface = "bold",  aes(label = n, y= n+150)) +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "How many players had hamstring issues?", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+
+ham2 <- ggplot(data = injuries, aes(x= factor(year), fill = hamstring_inj)) +
+  geom_bar(position = "fill", color = "black") +
+  scale_fill_manual(values = c("gainsboro", "midnightblue"),
+                    name = "Injured Hamstring?") +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Have hamstring injuries as a proportion of \nall injuries changed over time?", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+ham5 <- injuries %>%
+  filter(status == "DNP" | status == "DTD",
+         hamstring_inj == TRUE) %>%
+  count(status) %>%
+  ggplot(aes(x=status, y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  geom_text(size = 4, fontface = "bold",  aes(label = n, y= n+10)) +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Hamstrings and Status", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+ham6 <- injuries %>%
+  filter(hamstring_inj == TRUE) %>%
+  count(month) %>%
+  ggplot(aes(x=month, y=n, group = 1)) +
+  geom_line(size = 1, color = "darkred") +
+  geom_point(size = 2, color = "midnightblue") +
+  geom_text(color = "midnightblue", aes(label = n, y=n+5)) +
+  theme_classic() +
+  labs(title = "When are hamstrings happening?", subtitle = "", x = "Calendar Year", y = "Number hamstring events") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+gridExtra::grid.arrange(ham1, ham5, ham2, ham6, nrow = 2)
+```
+
+During the period analysed, there were `r sum(injuries$hamstring_inj == "TRUE")` hamstring related notes (`r paste0(round(mean(injuries$hamstring_inj == "TRUE") *100,2),"%")`). Of those, 349 led to either a DNP or a DTD, with DNPs more frequent. The proportion of hamstring-related injuries to other injury types has not changed significantly, however after the lowest proportion in 2017, there has been a spike in the current year.
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=7, fig.height=4}
+ham3 <- injuries %>%
+  count(Team, hamstring_inj) %>%
+  filter(hamstring_inj == TRUE) %>%
+  arrange(desc(n)) %>%
+  head(n=10) %>%
+  ggplot(aes(x=reorder(Team, n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Most hamstring injuries by Team", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+
+ham4 <- injuries %>%
+  count(Relinquised, hamstring_inj) %>%
+  filter(hamstring_inj == TRUE) %>%
+  arrange(desc(n)) %>%
+  head(n=10) %>%
+  ggplot(aes(x=reorder(Relinquised, n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Players with the most \nhamstring injuries", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+  
+gridExtra::grid.arrange(ham3, ham4, nrow = 1)
+```
+
+The Lakers had the most hamstrings during the period, with the Bucks and Clippers rounding out the top three. Jordan Farmar was by far the most affected by hamstrings.
+
+```{r, message=FALSE, warning=FALSE}
+injuries %>%
+  filter(hamstring_inj == TRUE) %>%
+  select(year, cause) %>%
+  unnest_tokens(word, cause, token = "ngrams", n = 1) %>%
+  filter(word != "hamstring") %>%
+  count(word) %>%
+  arrange(desc(n))
+```
+
+Left hamstrings are mentioned slightly more than right ones.
+
+## Knee Injuries
+
+```{r, message=FALSE, warning=FALSE}
+knee_area <- c("knee", "acl", "patella", "mcl")
+
+injuries <- injuries %>%
+  mutate(knee_inj = str_detect(cause, "knee"))
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, fig.height=6}
+knee1 <- injuries %>%
+  count(knee_inj) %>%
+  ggplot(aes(x= knee_inj, y=n, fill = knee_inj)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  geom_text(size = 4, fontface = "bold",  aes(label = n, y= n+150)) +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "How many players had knee issues?", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+
+knee2 <- ggplot(data = injuries, aes(x= factor(year), fill = knee_inj)) +
+  geom_bar(position = "fill", color = "black") +
+  scale_fill_manual(values = c("gainsboro", "midnightblue"),
+                    name = "Injured Knee?") +
+  scale_y_continuous(labels = scales::percent) +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Have knee injuries as a proportion of \nall injuries changed over time?", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+knee5 <- injuries %>%
+  filter(knee_inj == TRUE) %>%
+  count(status) %>%
+  arrange(desc(n)) %>%
+  head(n=4) %>%
+  ggplot(aes(x=reorder(status,-n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  geom_text(size = 4, fontface = "bold",  aes(label = n, y= n+20)) +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Knee and Status", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+knee6 <- injuries %>%
+  filter(knee_inj == TRUE) %>%
+  count(month) %>%
+  ggplot(aes(x=month, y=n, group = 1)) +
+  geom_line(size = 1, color = "darkred") +
+  geom_point(size = 2, color = "midnightblue") +
+  geom_text(color = "midnightblue", aes(label = n, y=n+5)) +
+  theme_classic() +
+  labs(title = "When are knee happening?", subtitle = "", x = "Calendar Year", y = "Number knee events") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+gridExtra::grid.arrange(knee1, knee5, knee2, knee6, nrow = 2)
+```
+
+During the period analysed, there were `r sum(injuries$knee_inj == "TRUE")` hamstring related notes (`r paste0(round(mean(injuries$knee == "TRUE") *100,2),"%")`). Of those, 250 were considered severe with the player either `out indefinitely` or `out for the season`. The proportion of knee-related injuries to other injury types shows that there were twin peaks - one in 2011 and one in 2014. Each time these have dropped significantly the following year, then slowly started increasing.
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=7, fig.height=4}
+knee3 <- injuries %>%
+  count(Team, knee_inj) %>%
+  filter(knee_inj == TRUE) %>%
+  arrange(desc(n)) %>%
+  head(n=10) %>%
+  ggplot(aes(x=reorder(Team, n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Most knee injuries by Team", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+
+
+knee4 <- injuries %>%
+  count(Relinquised, knee_inj) %>%
+  filter(knee_inj == TRUE) %>%
+  arrange(desc(n)) %>%
+  head(n=10) %>%
+  ggplot(aes(x=reorder(Relinquised, n), y=n)) +
+  geom_col(fill = "midnightblue", color = "white") +
+  coord_flip() +
+  theme_minimal() +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank()) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  labs(title = "Players with the most \nknee injuries", subtitle = "2010 - 2018") +
+  theme(panel.grid.major.y = element_blank(), panel.background = element_rect(fill = "whitesmoke"))
+  
+gridExtra::grid.arrange(knee3, knee4, nrow = 1)
+```
+
+
+# Next Steps
+
+The next piece of this analysis will aim to bring in additional player data and try to start modelling whether various injury types can be predicted, or at the very least whether certain players are at greater risk than others for injuries.
+
